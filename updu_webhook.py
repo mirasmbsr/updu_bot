@@ -5,6 +5,25 @@ from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
+
+
+
+def save_users():
+    with open('users.json', 'w', encoding='utf-8') as f:
+        json.dump(users, f)
+
+def load_users():
+    global users
+    try:
+        with open('users.json', 'r', encoding='utf-8') as f:
+            users = json.load(f)
+    except FileNotFoundError:
+        users = {}
+
+
+
+
+        
 # Простая in-memory база (замени на SQLite для продакшена)
 users = {}
 waiting_proof = {}
