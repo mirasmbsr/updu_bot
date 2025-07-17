@@ -25,10 +25,11 @@ def load_users():
 
 
 # Простая in-memory база (замени на SQLite для продакшена)
-users = {}
-waiting_proof = {}
-pending_reports = {}
-REPORT_ID = 1
+users = {}            # group_id -> {user_id: {...}}
+waiting_proof = {}    # group_id -> {user_id: True/False}
+pending_reports = {}  # group_id -> {report_id: {...}}
+REPORT_ID = {}        # group_id -> int
+
 
 GROUP_ID = -4828175895  # твой group id (замени на свой)
 TOKEN = os.getenv("BOT_TOKEN") or "ТВОЙ_ТОКЕН_СЮДА"
@@ -43,35 +44,52 @@ def start(update, context):
     update.message.reply_text("Привет! Я Updu-бот. Введи /habit <текст привычки>, чтобы начать.")
 
 def habit(update, context):
+    group_id = update.effective_chat.id
     user_id = update.message.from_user.id
     username = update.message.from_user.username
     habit_text = ' '.join(context.args)
     if not habit_text:
         update.message.reply_text("Пример: /habit читать 10 страниц")
         return
-    users[user_id] = {'habit': habit_text, 'streak': 0, 'username': username}
+    if group_id not in users:
+        users[group_id] = {}
+    users[group_id][user_id] = {'habit': habit_text, 'streak': 0, 'username': username}
     update.message.reply_text(f"Привычка сохранена: {habit_text}")
 
+
 def done(update, context):
+    group_id = update.effective_chat.id
     user_id = update.message.from_user.id
-    if user_id not in users:
+    if group_id not in users or user_id not in users[group_id]:
         update.message.reply_text("Сначала задай привычку через /habit ...")
         return
-    waiting_proof[user_id] = True
+    if group_id not in waiting_proof:
+        waiting_proof[group_id] = {}
+    waiting_proof[group_id][user_id] = True
     update.message.reply_text("Пришли доказательство: фото, видео или текст!")
+
 
 def receive_proof(update, context):
     if not update.message or not update.message.from_user:
         return
+    group_id = update.effective_chat.id
     user_id = update.message.from_user.id
 
-    if not waiting_proof.get(user_id):
+    if group_id not in waiting_proof or not waiting_proof[group_id].get(user_id):
         return
-    username = users[user_id]['username']
-    habit_text = users[user_id]['habit']
-    global REPORT_ID
-    report_id = REPORT_ID
-    globals()['REPORT_ID'] += 1
+    if group_id not in users or user_id not in users[group_id]:
+        return
+
+    if group_id not in REPORT_ID:
+        REPORT_ID[group_id] = 1
+    report_id = REPORT_ID[group_id]
+    REPORT_ID[group_id] += 1
+
+    if group_id not in pending_reports:
+        pending_reports[group_id] = {}
+
+    username = users[group_id][user_id]['username']
+    habit_text = users[group_id][user_id]['habit']
 
     proof = None
     if update.message.photo:
@@ -87,8 +105,8 @@ def receive_proof(update, context):
         update.message.reply_text("Пришли фото, видео или текст!")
         return
 
-    waiting_proof[user_id] = False
-    pending_reports[report_id] = {
+    waiting_proof[group_id][user_id] = False
+    pending_reports[group_id][report_id] = {
         'user_id': user_id,
         'habit': habit_text,
         'username': username,
@@ -105,21 +123,22 @@ def receive_proof(update, context):
     ])
 
     if media_type == 'photo':
-        context.bot.send_photo(chat_id=GROUP_ID, photo=proof, caption=proof_text, reply_markup=kb, parse_mode='Markdown')
+        context.bot.send_photo(chat_id=group_id, photo=proof, caption=proof_text, reply_markup=kb, parse_mode='Markdown')
     elif media_type == 'video':
-        context.bot.send_video(chat_id=GROUP_ID, video=proof, caption=proof_text, reply_markup=kb, parse_mode='Markdown')
+        context.bot.send_video(chat_id=group_id, video=proof, caption=proof_text, reply_markup=kb, parse_mode='Markdown')
     elif media_type == 'text':
-        context.bot.send_message(chat_id=GROUP_ID, text=f"{proof_text}\n\n{proof}", reply_markup=kb, parse_mode='Markdown')
+        context.bot.send_message(chat_id=group_id, text=f"{proof_text}\n\n{proof}", reply_markup=kb, parse_mode='Markdown')
 
     update.message.reply_text("Доказательство отправлено в группу на подтверждение!")
 
 def button(update, context):
     query = update.callback_query
+    group_id = query.message.chat.id
     user_id = query.from_user.id
     data = query.data
     action, report_id = data.split('_')
     report_id = int(report_id)
-    report = pending_reports.get(report_id)
+    report = pending_reports.get(group_id, {}).get(report_id)
     if not report:
         query.answer("Этот отчёт уже закрыт!")
         return
@@ -142,22 +161,24 @@ def button(update, context):
         report['approvers'].discard(user_id)
         query.answer("Ты опроверг выполнение")
 
-    group_members = 5  # Замени на реальное число участников группы!
+    group_members = 5  # Тут тоже можно попробовать автоматом, но лучше сначала руками!
     votes = len(report['approvers']) + len(report['deniers'])
     needed = group_members // 2 + 1
     if len(report['approvers']) >= needed:
-        users[report['user_id']]['streak'] += 1
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{report['username']}, твоя привычка подтверждена! Стрик: {users[report['user_id']]['streak']} дней")
-        pending_reports.pop(report_id)
+        users[group_id][report['user_id']]['streak'] += 1
+        context.bot.send_message(chat_id=group_id, text=f"✅ @{report['username']}, твоя привычка подтверждена! Стрик: {users[group_id][report['user_id']]['streak']} дней")
+        pending_reports[group_id].pop(report_id)
     elif len(report['deniers']) >= needed:
-        users[report['user_id']]['streak'] = 0
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен.")
-        pending_reports.pop(report_id)
+        users[group_id][report['user_id']]['streak'] = 0
+        context.bot.send_message(chat_id=group_id, text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен.")
+        pending_reports[group_id].pop(report_id)
 
 def streak(update, context):
+    group_id = update.effective_chat.id
     user_id = update.message.from_user.id
-    streak = users.get(user_id, {}).get('streak', 0)
+    streak = users.get(group_id, {}).get(user_id, {}).get('streak', 0)
     update.message.reply_text(f"Твой стрик: {streak} дней подряд.")
+
 
 # === Регистрация хендлеров ===
 dispatcher.add_handler(CommandHandler("start", start))
@@ -175,6 +196,7 @@ def webhook():
 
 @app.route('/')
 def index():
+    
     return 'Updu бот на вебхуках!'
 
 if __name__ == "__main__":
