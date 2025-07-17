@@ -23,7 +23,7 @@ def load_users():
 
 
 
-        
+
 # Простая in-memory база (замени на SQLite для продакшена)
 users = {}
 waiting_proof = {}
@@ -147,11 +147,11 @@ def button(update, context):
     needed = group_members // 2 + 1
     if len(report['approvers']) >= needed:
         users[report['user_id']]['streak'] += 1
-        context.bot.send_message(chat_id=GROUP_ID, text=f"✅ @{report['username']}, твоя привычка подтверждена! Стрик: {users[report['user_id']]['streak']} дней")
+        context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{report['username']}, твоя привычка подтверждена! Стрик: {users[report['user_id']]['streak']} дней")
         pending_reports.pop(report_id)
     elif len(report['deniers']) >= needed:
         users[report['user_id']]['streak'] = 0
-        context.bot.send_message(chat_id=GROUP_ID, text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен.")
+        context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен.")
         pending_reports.pop(report_id)
 
 def streak(update, context):
