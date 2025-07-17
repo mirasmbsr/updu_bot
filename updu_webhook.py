@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -158,5 +159,6 @@ def index():
     return 'Updu бот на вебхуках!'
 
 if __name__ == "__main__":
+    load_users()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
