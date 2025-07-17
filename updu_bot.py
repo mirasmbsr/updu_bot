@@ -40,7 +40,11 @@ def done(update: Update, context: CallbackContext):
     update.message.reply_text("Пришли доказательство: фото, видео или текст!")
 
 def receive_proof(update: Update, context: CallbackContext):
+    if not update.message or not update.message.from_user:
+        return
     user_id = update.message.from_user.id
+    # ... остальной код
+
     if not waiting_proof.get(user_id):
         return
     username = users[user_id]['username']
