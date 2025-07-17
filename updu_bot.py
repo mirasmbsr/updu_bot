@@ -12,7 +12,7 @@ REPORT_ID = 1
 
 # ===== НАСТРОЙКИ =====
 GROUP_ID = -4828175895 # твой group id (замени на свой)
-TOKEN = os.getenv("8166321371:AAG56x3nbgv3KwyejtJqdWmORxp84p8av0Y")
+TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
