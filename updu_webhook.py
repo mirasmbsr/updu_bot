@@ -39,6 +39,7 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 bot = Bot(token=TOKEN)
 dispatcher = Dispatcher(bot, None, workers=0)
+BOT_ID = None
 
 def start(update, context):
     update.message.reply_text("Привет! Я Updu-бот. Введи /habit <текст привычки>, чтобы начать.")
@@ -112,14 +113,17 @@ def receive_proof(update, context):
         'username': username,
         'proof': proof,
         'media_type': media_type,
-        'approvers': set(),
-        'deniers': set()
+        'approvers': [],
+        'deniers': []
     }
 
-    proof_text = f"@{username} говорит, что выполнил привычку:\n*{habit_text}*\n\nВот его доказательство:"
+    proof_text = (
+        f"@{username} говорит, что выполнил привычку:\n*{habit_text}*\n\nВот его доказательство:\n"
+        f"\n✅ 0 подтверждений"
+    )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_{report_id}")],
-        [InlineKeyboardButton("❌ Опровергнуть", callback_data=f"deny_{report_id}")]
+        [InlineKeyboardButton("✅ Подтвердить (0)", callback_data=f"approve_{report_id}")],
+        [InlineKeyboardButton("❌ Опровергнуть (0)", callback_data=f"deny_{report_id}")]
     ])
 
     if media_type == 'photo':
@@ -142,35 +146,61 @@ def button(update, context):
     if not report:
         query.answer("Этот отчёт уже закрыт!")
         return
-    if user_id == report['user_id']:
-        query.answer("Ты не можешь голосовать за себя!")
+    if user_id == report['user_id'] or user_id == BOT_ID:
+        query.answer("Ты не можешь голосовать за себя или за бота!")
         return
 
+    changed = False
     if action == 'approve':
         if user_id in report['approvers']:
             query.answer("Ты уже голосовал 'Подтвердить'")
             return
-        report['approvers'].add(user_id)
-        report['deniers'].discard(user_id)
+        report['approvers'].append(user_id)
+        if user_id in report['deniers']:
+            report['deniers'].remove(user_id)
+        changed = True
         query.answer("Ты подтвердил выполнение")
     elif action == 'deny':
         if user_id in report['deniers']:
             query.answer("Ты уже голосовал 'Опровергнуть'")
             return
-        report['deniers'].add(user_id)
-        report['approvers'].discard(user_id)
+        report['deniers'].append(user_id)
+        if user_id in report['approvers']:
+            report['approvers'].remove(user_id)
+        changed = True
         query.answer("Ты опроверг выполнение")
 
-    group_members = 5  # Тут тоже можно попробовать автоматом, но лучше сначала руками!
-    votes = len(report['approvers']) + len(report['deniers'])
-    needed = group_members // 2 + 1
-    if len(report['approvers']) >= needed:
+    group_members = len(users.get(group_id, {}))
+    if BOT_ID and BOT_ID in users.get(group_id, {}):
+        group_members -= 1
+    needed = group_members // 2 + 1 if group_members > 1 else 1
+
+    approve_count = len(report['approvers'])
+    deny_count = len(report['deniers'])
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Подтвердить ({approve_count})", callback_data=f"approve_{report_id}")],
+        [InlineKeyboardButton(f"❌ Опровергнуть ({deny_count})", callback_data=f"deny_{report_id}")]
+    ])
+    try:
+        query.edit_message_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
+
+    if approve_count >= needed:
         users[group_id][report['user_id']]['streak'] += 1
-        context.bot.send_message(chat_id=group_id, text=f"✅ @{report['username']}, твоя привычка подтверждена! Стрик: {users[group_id][report['user_id']]['streak']} дней")
+        context.bot.send_message(
+            chat_id=group_id,
+            text=(f"✅ @{report['username']}, твоя привычка подтверждена!\n"
+                  f"Стрик: {users[group_id][report['user_id']]['streak']} дней подряд! 🎉")
+        )
         pending_reports[group_id].pop(report_id)
-    elif len(report['deniers']) >= needed:
+    elif deny_count >= needed:
         users[group_id][report['user_id']]['streak'] = 0
-        context.bot.send_message(chat_id=group_id, text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен.")
+        context.bot.send_message(
+            chat_id=group_id,
+            text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен."
+        )
         pending_reports[group_id].pop(report_id)
 
 def streak(update, context):
@@ -199,7 +229,14 @@ def index():
     
     return 'Updu бот на вебхуках!'
 
-if __name__ == "__main__":
+def main():
+    global BOT_ID
+    BOT_ID = bot.get_me().id
     load_users()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    main()
+
+
