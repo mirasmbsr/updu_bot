@@ -40,6 +40,7 @@ app = Flask(__name__)
 bot = Bot(token=TOKEN)
 dispatcher = Dispatcher(bot, None, workers=0)
 BOT_ID = None
+pending_habit = {}  # user_id -> habit_text
 
 def start(update, context):
     update.message.reply_text("Привет! Я Updu-бот. Введи /habit <текст привычки>, чтобы начать.")
@@ -52,10 +53,21 @@ def habit(update, context):
     if not habit_text:
         update.message.reply_text("Пример: /habit читать 10 страниц")
         return
-    if group_id not in users:
-        users[group_id] = {}
-    users[group_id][user_id] = {'habit': habit_text, 'streak': 0, 'username': username}
-    update.message.reply_text(f"Привычка сохранена: {habit_text}")
+
+    # Сохраняем в ожидание подтверждения
+    pending_habit[user_id] = (group_id, habit_text)
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да", callback_data="habit_confirm"),
+            InlineKeyboardButton("❌ Нет", callback_data="habit_cancel")
+        ]
+    ])
+    update.message.reply_text(
+        f"Вы уверены, что хотите изменить привычку на:\n*{habit_text}*?",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
 
 
 def done(update, context):
@@ -137,9 +149,38 @@ def receive_proof(update, context):
 
 def button(update, context):
     query = update.callback_query
-    group_id = query.message.chat.id
     user_id = query.from_user.id
     data = query.data
+
+    # --- Обработка подтверждения смены привычки ---
+    if data == "habit_confirm":
+        if user_id in pending_habit:
+            group_id, habit_text = pending_habit.pop(user_id)
+            username = query.from_user.username
+            if group_id not in users:
+                users[group_id] = {}
+            users[group_id][user_id] = {'habit': habit_text, 'streak': 0, 'username': username}
+            query.edit_message_text(f"Привычка изменена на: *{habit_text}*", parse_mode="Markdown")
+        else:
+            query.answer("Нет привычки для подтверждения.")
+        return
+
+    if data == "habit_cancel":
+        if user_id in pending_habit:
+            pending_habit.pop(user_id)
+            query.edit_message_text("Изменение привычки отменено.")
+        else:
+            query.answer("Нет привычки для отмены.")
+        return
+
+    # --- ДАЛЬШЕ обычный обработчик кнопок ---
+    group_id = query.message.chat.id
+
+    # data должен быть вида approve_123 или deny_123
+    if '_' not in data:
+        query.answer("Неверный формат кнопки.")
+        return
+
     action, report_id = data.split('_')
     report_id = int(report_id)
     report = pending_reports.get(group_id, {}).get(report_id)
@@ -202,6 +243,7 @@ def button(update, context):
             text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен."
         )
         pending_reports[group_id].pop(report_id)
+
 
 def streak(update, context):
     group_id = update.effective_chat.id
