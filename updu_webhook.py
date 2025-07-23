@@ -4,7 +4,7 @@ import logging
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
-
+import math
 
 
 
@@ -211,13 +211,17 @@ def button(update, context):
         changed = True
         query.answer("Ты опроверг выполнение")
 
-    group_members = len(users.get(group_id, {}))
-    if BOT_ID and BOT_ID in users.get(group_id, {}):
-        group_members -= 1
-    needed = group_members // 2 + 1 if group_members > 1 else 1
+    group_members = [uid for uid in users.get(group_id, {}) if uid != BOT_ID]
+    members_count = len(group_members)
+    if members_count == 0:
+        members_count = 1  # Чтобы не было деления на ноль
 
     approve_count = len(report['approvers'])
     deny_count = len(report['deniers'])
+
+    needed = math.ceil(members_count * 0.4)
+    if needed < 1:
+        needed = 1  
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"✅ Подтвердить ({approve_count})", callback_data=f"approve_{report_id}")],
