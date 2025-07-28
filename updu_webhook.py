@@ -1,46 +1,97 @@
 import os
-import json
+import math
+import sqlite3
 import logging
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
-import math
 
+# ======================= БАЗА ДАННЫХ ============================
 
+DB_PATH = 'updu.db'
 
-def save_users():
-    with open('users.json', 'w', encoding='utf-8') as f:
-        json.dump(users, f)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        group_id INTEGER,
+        user_id INTEGER,
+        username TEXT,
+        habit TEXT,
+        streak INTEGER DEFAULT 0,
+        PRIMARY KEY (group_id, user_id)
+    )""")
+    conn.commit()
+    conn.close()
 
-def load_users():
-    global users
-    try:
-        with open('users.json', 'r', encoding='utf-8') as f:
-            users = json.load(f)
-    except FileNotFoundError:
-        users = {}
+def set_habit(group_id, user_id, username, habit):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+    INSERT OR REPLACE INTO users (group_id, user_id, username, habit, streak)
+    VALUES (?, ?, ?, ?, COALESCE((SELECT streak FROM users WHERE group_id=? AND user_id=?), 0))
+    """, (group_id, user_id, username, habit, group_id, user_id))
+    conn.commit()
+    conn.close()
 
+def get_habit(group_id, user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT habit FROM users WHERE group_id=? AND user_id=?", (group_id, user_id))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
 
+def increment_streak(group_id, user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET streak = streak + 1 WHERE group_id=? AND user_id=?", (group_id, user_id))
+    conn.commit()
+    c.execute("SELECT streak FROM users WHERE group_id=? AND user_id=?", (group_id, user_id))
+    streak = c.fetchone()[0]
+    conn.close()
+    return streak
 
+def reset_streak(group_id, user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET streak = 0 WHERE group_id=? AND user_id=?", (group_id, user_id))
+    conn.commit()
+    conn.close()
 
+def get_streak(group_id, user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT streak FROM users WHERE group_id=? AND user_id=?", (group_id, user_id))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
 
-# Простая in-memory база (замени на SQLite для продакшена)
-users = {}            # group_id -> {user_id: {...}}
-waiting_proof = {}    # group_id -> {user_id: True/False}
-pending_reports = {}  # group_id -> {report_id: {...}}
-REPORT_ID = {}        # group_id -> int
+def get_group_members(group_id, exclude_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if exclude_id:
+        c.execute("SELECT user_id FROM users WHERE group_id=? AND user_id != ?", (group_id, exclude_id))
+    else:
+        c.execute("SELECT user_id FROM users WHERE group_id=?", (group_id,))
+    members = [row[0] for row in c.fetchall()]
+    conn.close()
+    return members
 
-
-GROUP_ID = -4828175895  # твой group id (замени на свой)
-TOKEN = os.getenv("BOT_TOKEN") or "ТВОЙ_ТОКЕН_СЮДА"
+# =================== ТЕЛЕГРАМ БОТ (WEBHOOK) ======================
 
 logging.basicConfig(level=logging.INFO)
 
+TOKEN = os.getenv("BOT_TOKEN") or "ТВОЙ_ТОКЕН"
 app = Flask(__name__)
 bot = Bot(token=TOKEN)
 dispatcher = Dispatcher(bot, None, workers=0)
 BOT_ID = None
-pending_habit = {}  # user_id -> habit_text
+pending_habit = {}      # user_id -> (group_id, habit_text)
+waiting_proof = {}      # group_id -> {user_id: True/False}
+pending_reports = {}    # group_id -> {report_id: {...}}
+REPORT_ID = {}          # group_id -> int
 
 def start(update, context):
     update.message.reply_text("Привет! Я Updu-бот. Введи /habit <текст привычки>, чтобы начать.")
@@ -56,7 +107,6 @@ def habit(update, context):
 
     # Сохраняем в ожидание подтверждения
     pending_habit[user_id] = (group_id, habit_text)
-
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Да", callback_data="habit_confirm"),
@@ -69,18 +119,17 @@ def habit(update, context):
         parse_mode="Markdown"
     )
 
-
 def done(update, context):
     group_id = update.effective_chat.id
     user_id = update.message.from_user.id
-    if group_id not in users or user_id not in users[group_id]:
+    habit_now = get_habit(group_id, user_id)
+    if not habit_now:
         update.message.reply_text("Сначала задай привычку через /habit ...")
         return
     if group_id not in waiting_proof:
         waiting_proof[group_id] = {}
     waiting_proof[group_id][user_id] = True
     update.message.reply_text("Пришли доказательство: фото, видео или текст!")
-
 
 def receive_proof(update, context):
     if not update.message or not update.message.from_user:
@@ -90,7 +139,8 @@ def receive_proof(update, context):
 
     if group_id not in waiting_proof or not waiting_proof[group_id].get(user_id):
         return
-    if group_id not in users or user_id not in users[group_id]:
+    habit_now = get_habit(group_id, user_id)
+    if not habit_now:
         return
 
     if group_id not in REPORT_ID:
@@ -101,8 +151,8 @@ def receive_proof(update, context):
     if group_id not in pending_reports:
         pending_reports[group_id] = {}
 
-    username = users[group_id][user_id]['username']
-    habit_text = users[group_id][user_id]['habit']
+    username = update.message.from_user.username or "user"
+    habit_text = habit_now
 
     proof = None
     if update.message.photo:
@@ -157,9 +207,7 @@ def button(update, context):
         if user_id in pending_habit:
             group_id, habit_text = pending_habit.pop(user_id)
             username = query.from_user.username
-            if group_id not in users:
-                users[group_id] = {}
-            users[group_id][user_id] = {'habit': habit_text, 'streak': 0, 'username': username}
+            set_habit(group_id, user_id, username, habit_text)
             query.edit_message_text(f"Привычка изменена на: *{habit_text}*", parse_mode="Markdown")
         else:
             query.answer("Нет привычки для подтверждения.")
@@ -191,7 +239,6 @@ def button(update, context):
         query.answer("Ты не можешь голосовать за себя или за бота!")
         return
 
-    changed = False
     if action == 'approve':
         if user_id in report['approvers']:
             query.answer("Ты уже голосовал 'Подтвердить'")
@@ -199,7 +246,6 @@ def button(update, context):
         report['approvers'].append(user_id)
         if user_id in report['deniers']:
             report['deniers'].remove(user_id)
-        changed = True
         query.answer("Ты подтвердил выполнение")
     elif action == 'deny':
         if user_id in report['deniers']:
@@ -208,10 +254,9 @@ def button(update, context):
         report['deniers'].append(user_id)
         if user_id in report['approvers']:
             report['approvers'].remove(user_id)
-        changed = True
         query.answer("Ты опроверг выполнение")
 
-    group_members = [uid for uid in users.get(group_id, {}) if uid != BOT_ID]
+    group_members = get_group_members(group_id, exclude_id=BOT_ID)
     members_count = len(group_members)
     if members_count == 0:
         members_count = 1  # Чтобы не было деления на ноль
@@ -233,28 +278,26 @@ def button(update, context):
         pass
 
     if approve_count >= needed:
-        users[group_id][report['user_id']]['streak'] += 1
+        streak_now = increment_streak(group_id, report['user_id'])
         context.bot.send_message(
             chat_id=group_id,
             text=(f"✅ @{report['username']}, твоя привычка подтверждена!\n"
-                  f"Стрик: {users[group_id][report['user_id']]['streak']} дней подряд! 🎉")
+                  f"Стрик: {streak_now} дней подряд! 🎉")
         )
         pending_reports[group_id].pop(report_id)
     elif deny_count >= needed:
-        users[group_id][report['user_id']]['streak'] = 0
+        reset_streak(group_id, report['user_id'])
         context.bot.send_message(
             chat_id=group_id,
             text=f"❌ @{report['username']}, выполнение отклонено! Стрик сброшен."
         )
         pending_reports[group_id].pop(report_id)
 
-
 def streak(update, context):
     group_id = update.effective_chat.id
     user_id = update.message.from_user.id
-    streak = users.get(group_id, {}).get(user_id, {}).get('streak', 0)
+    streak = get_streak(group_id, user_id)
     update.message.reply_text(f"Твой стрик: {streak} дней подряд.")
-
 
 # === Регистрация хендлеров ===
 dispatcher.add_handler(CommandHandler("start", start))
@@ -272,17 +315,14 @@ def webhook():
 
 @app.route('/')
 def index():
-    
     return 'Updu бот на вебхуках!'
 
 def main():
     global BOT_ID
+    init_db()
     BOT_ID = bot.get_me().id
-    load_users()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
     main()
-
-
