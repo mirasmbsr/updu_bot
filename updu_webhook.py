@@ -83,7 +83,7 @@ def get_group_members(group_id, exclude_id=None):
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN = os.getenv("BOT_TOKEN") or "ТВОЙ_ТОКЕН"
+TOKEN = os.getenv("BOT_TOKEN") or "8166321371:AAG56x3nbgv3KwyejtJqdWmORxp84p8av0Y"
 app = Flask(__name__)
 bot = Bot(token=TOKEN)
 dispatcher = Dispatcher(bot, None, workers=0)
